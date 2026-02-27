@@ -1,0 +1,164 @@
+---
+author: Kirill Maslinsky
+title: Классификация изданий на фикциональные/нефикциональные по Старцеву
+---
+
+## Определение фикционального статуса
+
+
+Таблица изданий, про которые точно не известен их фикциональный статус
+(могут оказаться нонфиками) до 1953 года.  Критерии отбора.
+
+1. Исключаем всех переводных авторов. Исключаем все переводные издания (непустой orig_lang)
+
+2. Устанавливаем метажанр по разделу и жанровым меткам. 
+
+3. Исключаем список точно фикциональных изданий: 
+
+ * автор заведомо автор фикшн (по таблице после 1953 года за его авторством преобладают издания в разделе фикшн)
+ * поле жанр заполнено (фикциональным жанром)
+ 
+3. Исключаем список заведомого нонфика: 
+ 
+ * автор пишет преимущественно нонфик (по таблице после 1953 года)
+ * специализированное издательство
+ * жанр нонфик (очерк?) или отсутствует
+ 
+4. Остаток — это сомнительные
+
+
+## Загрузка данных 
+
+Загрузка пакетов
+
+```{r}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+```
+
+Берем (пока) локальную копию данных библиографии Старцева. 
+
+```{r}
+## d <- read_csv("~/lab/childlit/bib/dataset/editions.csv")
+## a <- read_csv("~/lab/childlit/bib/dataset/authors.csv")
+d <- read_csv("data/editions.csv")
+a <- read_csv("data/authors.csv")
+```
+
+### Разметка переводов
+
+Объединяем данные об изданиях с данными об авторах: 
+
+```{r}
+editions <- d |>
+    separate_longer_delim(author_std, delim="; ") |>
+    left_join(a, by="author_std") |>
+    mutate(translated = case_when(
+               !is.na(orig_lang) ~ TRUE,
+               is.na(orig_lang) & languages == "русский" ~ FALSE,
+               str_detect(title, "народные|народов") & !str_detect(title, regex("русск|вятск", ignore_case=TRUE)) ~ TRUE,
+               str_detect(subtitle, "народные|народов") & !str_detect(subtitle, regex("русск|вятск", ignore_case=TRUE)) ~ TRUE,
+               str_detect(subtitle, "[Рр]усск") ~ FALSE,
+               vol >= "1953-1954" & str_detect(section, "других|зарубеж") ~ TRUE,
+               TRUE ~ FALSE
+           ))
+```
+
+Учитываем только оригинальные русскоязычные произведения.  Отбросим
+иноязычных авторов и переводные издания.
+
+```{r}
+rus <- editions |>
+    filter(!translated)
+```
+
+### Разметка метажанров
+
+Размечаем метажанры по рубрикации указателя после 1953 г. Если указан
+жанр и это не очерк — фикшн. Очерки, включая биографические нарративы,
+относим к беллетристике и включаем в фикшн.
+
+```{r}
+rus.genre <- rus |>
+    mutate(metagenre = case_when(
+               str_detect(section, "народного твор|фольклор") ~ "folk",
+               is.na(author_std) & str_detect(title, regex("(русск|народ).*сказк|сказк.*народ", ignore_case=TRUE)) ~ "folk",
+               is.na(author_std) & str_detect(subtitle, regex("(русск|народ).*сказк|сказк.*народ", ignore_case=TRUE)) ~ "folk",
+               str_detect(section, "раскраш") ~ "coloring",
+               str_detect(section, regex("самодеят|пионер", ignore_case=TRUE)) ~ "method",
+               str_detect(section, "Художественная литература") ~ "fic",
+               str_detect(section, "Научно-художественная") ~ "nonfic",
+               genre == "Былина" ~ "folk",
+               !is.na(genre) ~ "fic",
+               TRUE ~ NA
+           ))
+```
+
+
+### Классификация авторов фикшн/нонфикшн
+
+Глобальное общее количество фикшн и всего остального: 
+
+```{r}
+rus.genre |> filter(!is.na(metagenre)) |> count(metagenre == "fic")
+```
+
+
+Соотношение произведений в разделах фикшн/нонфикшн для авторов
+
+```{r}
+rus.ficnonfic <- rus.genre |>
+    filter(!is.na(author_std) & author_std != "OTHERS") |>
+    count(author_std, metagenre) |>
+    group_by(author_std) |>
+    mutate(tot = sum(n)) |>
+    arrange(desc(tot)) |>
+    pivot_wider(names_from = "metagenre", values_from = "n", values_fill=0) |>
+    mutate(r = log(fic/(nonfic+folk+method+coloring))) |>
+    mutate(rsmoothed = log(fic+42243))
+```
+
+Простой эвристический классификатор авторов (по логарифму отношения фик ко всему остальному больше 2 по модулю)
+
+```{r}
+authors.guess <- rus.ficnonfic |>
+    filter(abs(r) > 2) |>
+    mutate(guess = ifelse(r > 0, "fic", "other")) |>
+    select(author_std, guess) |>
+    ungroup()
+authors.guess |> count(guess)
+```
+
+Разметка авторов до 1953 года с помощью эвристического классификатора: 
+
+```{r}
+rus.guessed <- rus.genre |>
+    left_join(authors.guess) |>
+    mutate(metagenre = ifelse(is.na(metagenre), guess, metagenre))
+rus.guessed |> count(metagenre)
+```
+
+## Сохранение данных
+
+Выборка не определенных по метажанру изданий: 
+
+```{r}
+rus.guessed |>
+    filter(vol < "1953-1954") |>
+    filter(is.na(metagenre)) |>
+    select(vol, num, author=author.x, author_std, title, subtitle, editorial, genre, city, publisher, year, series, pages, printrun, price, contents) |>
+    write_csv("data/no_metagenre.csv")
+```
+
+Полные данные с эвристически определенными метажанрами: 
+
+```{r}
+rus.guessed |>
+    filter(!is.na(metagenre)) |>
+    select(metagenre, vol, num, author=author.x, author_std, title, subtitle, editorial, genre, city, publisher, year, series, pages, printrun, price, contents) |>
+    write_csv("data/metagenre.csv")
+```
+
