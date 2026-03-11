@@ -162,3 +162,97 @@ rus.guessed |>
     write_csv("data/metagenre.csv")
 ```
 
+### Загрузка и проверка жанров, размеченных LLM
+
+```{r}
+llama <- read_csv("data/llama.csv")
+```
+Раскладка по метажанрам: 
+
+```{r}
+llama |>
+    count(metagenre, sort=TRUE) |>
+    mutate(p = n/sum(n)*100)
+```
+
+Выборка для ручной проверки: 
+
+```{r}
+set.seed(829)
+llama |>
+    sample_n(200) |>
+    mutate(corr="") |>
+    select(metagenre, corr, author, author_std, title, subtitle, editorial, series, genre, year, vol, num) |>
+    write_csv("data/metagenre_check200.csv")
+```
+
+Оценка точности классификатора по результатам ручной проверки
+
+```{r}
+checked <- read_csv("data/metagenre_checked200.csv") |>
+    mutate(corr = ifelse(!is.na(corr), corr, metagenre))
+correct <- checked |> select(vol, num, corr)
+```
+
+```{r}
+library(MLmetrics)
+eval_result <- function(data, correct) {
+    d <- data |> right_join(correct, by=c("vol", "num"))
+    cat("Precision: ", Precision(d$corr, d$metagenre, positive="fic"), "\n")
+    cat("Recall: ", Recall(d$corr, d$metagenre, positive="fic"), "\n")
+    cat("F1: ", F1_Score(d$corr, d$metagenre, positive="fic"), "\n")
+    ConfusionMatrix(d$corr, d$metagenre)
+}
+
+eval_result(llama, correct)
+```
+
+
+### Результаты разметки Мистраль
+
+```{r}
+mistral <- read_csv("data/mistral.csv") 
+mistral |> count(metagenre, sort=TRUE) |> mutate(p = n/sum(n)*100)
+```
+
+Оценка результатов
+
+
+```{r}
+eval_result(mistral, correct)
+```
+
+### Результаты разметки Гемма
+
+
+```{r}
+gemma <- read_csv("data/gemma.csv") 
+gemma |> count(metagenre, sort=TRUE) |> mutate(p = n/sum(n)*100)
+```
+
+```{r}
+eval_result(gemma, correct)
+```
+
+### Majority vote
+
+```{r}
+ensemble <- bind_rows(llama=llama, mistral=mistral, gemma=gemma, .id="model") |>
+    distinct(model, vol, num, .keep_all = TRUE) |>
+    mutate(guess = ifelse(metagenre == "fic", "fic", "other")) |>
+    group_by(vol, num, author, title) |>
+    count(guess) |>
+    filter(n==max(n)) |>
+    rename(metagenre=guess)
+ensemble |>
+    ungroup() |>
+    count(n) |>
+    mutate(p = nn/sum(nn)*100)
+```
+
+```{r}
+correct.bin <- correct |>
+    mutate(corr = ifelse(corr == "fic", "fic", "other"))
+
+eval_result(ensemble, correct.bin)
+```
