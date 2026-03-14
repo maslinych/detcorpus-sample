@@ -42,8 +42,8 @@ library(ggplot2)
 Берем (пока) локальную копию данных библиографии Старцева. 
 
 ```{r}
-## d <- read_csv("~/lab/childlit/bib/dataset/editions.csv")
-## a <- read_csv("~/lab/childlit/bib/dataset/authors.csv")
+d <- read_csv("~/lab/childlit/bib/dataset/editions.csv")
+a <- read_csv("~/lab/childlit/bib/dataset/authors.csv")
 d <- read_csv("data/editions.csv")
 a <- read_csv("data/authors.csv")
 ```
@@ -103,7 +103,10 @@ rus.genre <- rus |>
 Глобальное общее количество фикшн и всего остального: 
 
 ```{r}
-rus.genre |> filter(!is.na(metagenre)) |> count(metagenre == "fic")
+rus.genre |>
+    filter(!is.na(metagenre)) |>
+    count(metagenre == "fic") |>
+    mutate(p = n/sum(n)*100)
 ```
 
 
@@ -129,7 +132,7 @@ authors.guess <- rus.ficnonfic |>
     mutate(guess = ifelse(r > 0, "fic", "other")) |>
     select(author_std, guess) |>
     ungroup()
-authors.guess |> count(guess)
+authors.guess |> count(guess) |> mutate(p = n/sum(n)*100)
 ```
 
 Разметка авторов до 1953 года с помощью эвристического классификатора: 
@@ -146,10 +149,15 @@ rus.guessed |> count(metagenre)
 Выборка не определенных по метажанру изданий: 
 
 ```{r}
-rus.guessed |>
+rus.nogenre <- rus.guessed |>
     filter(vol < "1953-1954") |>
     filter(is.na(metagenre)) |>
-    select(vol, num, author=author.x, author_std, title, subtitle, editorial, genre, city, publisher, year, series, pages, printrun, price, contents) |>
+    group_by(vol, num) |>
+    mutate(author_std = paste(author_std, sep="; ")) |>
+    distinct(vol, num, .keep_all=TRUE) |>
+    select(vol, num, author=author.x, author_std, title, subtitle, editorial, genre, city, publisher, year, series, pages, printrun, price, contents)
+
+rus.nogenre |>
     write_csv("data/no_metagenre.csv")
 ```
 
@@ -161,6 +169,21 @@ rus.guessed |>
     select(metagenre, vol, num, author=author.x, author_std, title, subtitle, editorial, genre, city, publisher, year, series, pages, printrun, price, contents) |>
     write_csv("data/metagenre.csv")
 ```
+
+### Тестовая выборка для ручной разметки
+
+```{r}
+set.seed(189)
+rus200 <- rus.nogenre |>
+    ungroup() |>
+    sample_n(200)
+
+rus200 |>
+    mutate(corr = "") |>
+    select(vol, num, corr, author, title, subtitle, editorial, series, publisher, contents) |>
+    write_csv("data/metagenre_200.csv")
+```
+
 
 ### Загрузка и проверка жанров, размеченных LLM
 
